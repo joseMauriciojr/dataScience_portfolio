@@ -1,0 +1,305 @@
+---
+title: "Projeto - Final"
+author: |
+        | Nome: José Mauricio Nunes de Oliveira Junior
+        | E-mail: jose.mauricio@aluno.ufabc.edu.br
+        | Nome: Marcela Akemi Yamashita
+        | E-mail: marcela.a@aluno.ufabc.edu.br
+
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Contexto
+
+  A produção global de grãos abastece os mercados e casas do mundo inteiro. Entender a tendência da produção em diversos países pode trazer insights tanto sobre a economia global desses produtos, como o mercado interno de país quando relacionado a indicadores sociais e também até relações internacionais quando se leva outros dados em conta. Disponibilizado pelo "Our World in Data" e dentro tidytuesdayR, este conjunto de dados temos informações da produção de grãos para diversos países, mas também obtemos outros dados importantes como uso de fertilizantes, hectares de solo arado, tratores por metros quadrados e a população da região. Desta forma seria interessante explorar os dados e construir um modelo para predição de anos futuros a evolução de produção de grãos. 
+
+## Importância do projeto
+
+Este projeto se destaca pela construção de um modelo preditivo para produção anual de grãos para cada país ou região.
+
+## Carregando os dados e produzindo os datasets
+
+* Para conjunto inicial de dados precisamos realizar alguns tratamentos.
+  + Ao invés de tenta predizer cada grão individualmente vamos transformar varias colunas em uma coluna categórica apenas para definir o grão, *crop*, e uma variável numérica que diz a colheita numérica de toneladas por hectare referente ao grão produzido, *crop production*.
+  + Decidimos que o nosso "target", nossa variável resposta, para o modelo seria o crop production, que é a *eficiência de plantio* de um país.
+  + Para construção de variáveis de nosso modelo atrasamos todas as variáveis em um ano, então para o ano 1999, por exemplo, todas as variáveis serão referente ao ano 1998. Isto pois a finalidade do modelo é predizer informações, e não faria sentido variáveis do mesmo tempo de nossa variável resposta.
+    + No entanto essa construção foi a respeito apenas de *nossa modelagem* toda exploração, todos os gráficos terão a correspodênncia correta em anos
+    
+```{r, echo=FALSE}
+#install.packages("tidytuesdayR")
+library(tidytuesdayR)
+library(tidyverse)
+
+RMSE = function(m, o){sqrt(mean((m - o)^2))}
+
+tuesdata <- tidytuesdayR::tt_load('2020-09-01')
+tuesdata <- tidytuesdayR::tt_load(2020, week = 36)
+
+key_crop_yields <- tuesdata$key_crop_yields
+fertilizer_raw <- tuesdata$cereal_crop_yield_vs_fertilizer_application
+tractors_raw <- tuesdata$cereal_yields_vs_tractor_inputs_in_agriculture
+land_use_raw <- tuesdata$land_use_vs_yield_change_in_cereal_production
+arable_land_raw <- tuesdata$arable_land_pin
+
+long_crops <- key_crop_yields %>% 
+  pivot_longer(cols = 4:last_col(),
+               names_to = "crop", 
+               values_to = "crop_production") %>% 
+  mutate(crop = str_remove_all(crop, " \\(tonnes per hectare\\)")) %>% 
+  set_names(nm = names(.) %>% tolower()) %>% dplyr::mutate(crop_production = replace_na(crop_production, 0))
+
+fertilizer <- fertilizer_raw%>% mutate(Year = as.integer(Year))  %>% mutate_if(is.numeric, funs(replace_na(., 0)))
+tractors <- tractors_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0)))
+land_use <- land_use_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0)))
+arable_land <- arable_land_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0)))
+
+df_eda<-long_crops %>% inner_join(fertilizer, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(tractors, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(land_use, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(arable_land, c("entity"="Entity","code"="Code" ,"year"="Year"))
+
+long_crops_lagged_1y <- rename(long_crops, last_year_production=crop_production) %>% mutate(year = year+1)
+long_crops_lagged_2y <- rename(long_crops, last_2year_production=crop_production) %>% mutate(year = year+2)
+long_crops_lagged_3y <- rename(long_crops, last_3year_production=crop_production) %>% mutate(year = year+3)
+
+df_long_crops <- long_crops %>% inner_join(long_crops_lagged_1y
+                                           , by = c("entity","code","year","crop")) %>%
+  inner_join(long_crops_lagged_2y
+                                           , by = c("entity","code","year","crop")) %>%
+inner_join(long_crops_lagged_3y
+                                           , by = c("entity","code","year","crop"))
+
+
+fertilizer <- fertilizer_raw%>% mutate(Year = as.integer(Year))  %>% mutate_if(is.numeric, funs(replace_na(., 0))) %>% mutate(Year = Year+1)
+tractors <- tractors_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0))) %>% mutate(Year = Year+1)
+land_use <- land_use_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0))) %>% mutate(Year = Year+1)
+arable_land <- arable_land_raw%>% mutate(Year = as.integer(Year)) %>% mutate_if(is.numeric, funs(replace_na(., 0))) %>% mutate(Year = Year+1)
+
+df<-df_long_crops %>% inner_join(fertilizer, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(tractors, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(land_use, c("entity"="Entity","code"="Code" ,"year"="Year"))%>%
+inner_join(arable_land, c("entity"="Entity","code"="Code" ,"year"="Year"))
+
+```
+
+## Exploração inicial dos dados
+
+Vamos começar explorando a produção de cada. Vamos começar analisando globalmente 
+
+```{r pressure1, echo=FALSE}
+print(nrow(distinct(df, year))) # Temos 52 anos datando desde 1961 até 2015
+print(nrow(distinct(df, crop))) # Temos 11 tipos de grãos datados em nossa amostra!
+print(nrow(distinct(df, year, crop))) # 572 combinações de ano com crop (o que mostra que realizamos de forma bem feita os tratamentos de long crop uma vez que 572 = 52*11)
+
+year_prod <- df_eda %>% filter(crop_production!=0)%>%  group_by(year, crop)%>%
+    summarize(crop_production = mean(crop_production))
+
+year_prod%>%ggplot(aes(year, crop_production, color = crop)) + geom_line(alpha = 0.7, size = 1.5) +
+  geom_point() + labs(x = NULL, y = "yield (tons per hectare)")
+```
+
+Observamos que todas as plantações tiveram um acréscimo de efieciência de plantio, sendo as batatas e bananas as produções que mais se desenvolveram furante os anos. Vamos observar agora alguns países que, ou são relevantes políticamente de alguma forma, ou são grandes produtores de plantio. Também adicionamos alguns países da américa latina para comparação.
+
+```{r pressure2, echo=FALSE}
+df_eda %>% filter(crop_production!=0)%>% filter(entity== c('China','Canada','Australia','Brazil', 'United States', 'Venezuela', 'Cuba', 'Japan', 'Uruguai', 'India', 'Russia', 'Indionesia', 'Chile'))%>%
+  ggplot(aes(year, crop_production, color = crop)) +
+  geom_line(alpha = 0.7, size = 1.5) +
+  geom_point() +
+  facet_wrap(~entity, ncol = 5) +
+  scale_x_continuous(guide = guide_axis(angle = 90)) +
+  labs(x = NULL, y = "yield (tons per hectare)")
+```
+
+Existem algumas observações interessantes, países escolhidos possuem grande volume de bata sendo produzido, junto a banana, tendência mundial. Em alguns países "cassava" em alguns momentos é a primeira ou segunda maior produção. Agora vamos observar o crescimento populacional médio de cada país.
+
+```{r pressure3, echo=FALSE}
+df_plot <- df_eda %>%  group_by(year)%>%
+    summarize(`Total population (Gapminder).x` = mean(`Total population (Gapminder).x`),
+`Nitrogen fertilizer use (kilograms per hectare)` = mean(`Nitrogen fertilizer use (kilograms per hectare)`),`Tractors per 100 sq km arable land` = mean(`Tractors per 100 sq km arable land`))
+
+df_plot%>% filter(`Total population (Gapminder).x`!=0) %>%ggplot(aes(year, `Total population (Gapminder).x`)) + geom_line(alpha = 0.7, size = 1.5) +
+  geom_point() + labs(x = NULL, y = "População")
+```
+
+O crescimento populacional desde 1960 tem uma tendência positiva, com um crescimento linear (na média). Existem outras variáveis interessantes para explorar: O usode fertilizantes a base de nitrôgenio e uso de tratores por m2 na média para todos os países.
+
+```{r pressure4, echo=FALSE}
+df_plot %>%ggplot(aes(year, `Nitrogen fertilizer use (kilograms per hectare)`)) + geom_line(alpha = 0.7, size = 1.5) +
+  geom_point() + labs(x = NULL, y = "Uso de fertilizante a base de nitrog")
+```
+
+Para o uso de fertilizantes a base de nitrogênio é possível observar que é um tendência atuala partir dos anos 2000, apesar de apresentar um quadro inconsistente no começo dos anos 2000, apresenta um crescimento para os anos seguintes.
+
+```{r pressure5, echo=FALSE}
+df_plot %>%ggplot(aes(year, `Tractors per 100 sq km arable land`)) + geom_line(alpha = 0.7, size = 1.5) +
+  geom_point() + labs(x = NULL, y = "Tratores para cada 100km2 de terra")
+```
+
+O uso de tratores vemos algo interessante: a partir de 2000 começa uma queda brusca até zerar. Essa variável parece um tanto quanto inconsistente, no entanto ainda materemos ela ainda no modelo, é possível que a quantia de tratores seja relacionada ao surgimento de novas tecnologias.
+
+## Modelagem
+
+Um passo importante da nossa amostra é entender que não podemos amostrar aleatoriamente: se o nosso modelo sempre pretende "prever" o futuro não é válido usar um conjunto de testes que esteja num tempo anterior ao de treino. É importante perceber que num conjunto de dados temporal, as observações são depedentes entre si, não sendo válido a utilização de métodos de validação cruzada. Desta forma iremos calcular um tamanho de amostra desejavel para teste tendo certeza que o conjunto de treino sempre esteja no passado, e nosso conjunto de validação em um período seguinte. O conjunto de dados começa em 1961, como usamos até 3 anos de atraso como novas variáveis (produção anual no ano passado, retrasado e anterior a este) nosso tibble de dados começa em 1964 totalizando 89463 linhas, vamos usar aproximadamente os anos anterior a 2005, totalizando 78694 linhas (~80%) para treino, até o ano 2014 como teste para parametrização de modelos e finalmente o ano 2015 como um última validação, ou seja, uma simulação de aplicação "real" do nosso modelo.
+
+```{r pressure6, echo=FALSE}
+library(tidymodels)
+df2<- df%>%filter(code!='BMU')%>%mutate_if(is.character,as.factor) %>%na.omit()
+
+receita = recipe( crop_production~.,data=df2) %>%
+        step_dummy(all_nominal(),-all_outcomes())  %>%
+        step_center(all_predictors()) %>%
+        step_scale(all_predictors()) 
+
+treino <- df2 %>%  filter(year<=2005)
+teste <- df2 %>%  filter(year>2005 & year<=2014)
+valida <- df2 %>%  filter(year==2015)
+
+rec.prep <- receita %>% prep(treino)
+treino.prep <- juice(rec.prep)
+teste.prep  <- bake(rec.prep,teste)
+valida.prep  <- bake(rec.prep,valida)
+df.prep  <- bake(rec.prep,df2)
+
+lin.model <- linear_reg(penalty = tune(),
+                         mixture = tune()) %>%
+    set_engine("lm") %>%
+    set_mode("regression")
+
+metrica = metric_set(rmse)
+
+lin.fit <- lin.model %>%
+    fit( crop_production ~ ., data = treino.prep)
+
+treino.pred <- treino.prep %>%
+    bind_cols(lin.fit %>% predict(new_data = treino.prep))
+
+teste.pred <- teste.prep %>%
+    bind_cols(lin.fit %>% predict(new_data = teste.prep))
+
+valida.pred <- valida.prep %>%
+    bind_cols(lin.fit %>% predict(new_data = valida.prep))
+
+teste_rmse <- RMSE(teste.pred$crop_production, teste.pred$.pred)
+treino_rmse <- RMSE(treino.pred$crop_production, treino.pred$.pred)
+valida_rmse <- RMSE(valida.pred$crop_production, valida.pred$.pred)
+
+
+```
+
+## Modelo Linear
+Pelo vamor dos RMSE, podemos ver que o erro do conjunto teve um resultado razoavel se comparado ao resultado do conjunto de testes e abaixo do conjunto de validação, o que nos leva a conclusão de que o modelo obteve um resultado satisfatório na predição dos dados. 
+```{r}
+cat("RMSE para Treino: ", treino_rmse, "\n")
+cat("RMSE para Teste: ", teste_rmse, "\n")
+cat("RMSE para Valida: ", valida_rmse)
+```
+
+
+```{r}
+plot(teste.pred$year, teste.pred$.pred, type = "p", col="blue")
+plot(teste.pred$year, teste.pred$crop_production, type = "p", col="red")
+```
+```{r}
+teste
+```
+
+
+## Modelo Xgboost (Gradient Boosting com árvore)
+
+Agora iremos testar nossa base em um modelo de árvores de gradiente usando o algoritmo de xgboost.
+```{r pressure, echo=FALSE}
+#library(xgboost)
+library(randomForest)
+library(mlbench)
+ncolunas <- 340
+tree_boosting <- boost_tree( min_n = 50,
+        trees = 2000,
+        mtry = sqrt(ncolunas),
+        stop_iter=50,
+        tree_depth=12,
+        learn_rate = 0.01
+        ) %>%
+        set_engine("xgboost") %>%
+        set_mode("regression")
+
+xgb<-tree_boosting%>% fit(crop_production ~.,treino.prep)
+
+treino.pred <- treino.prep %>%
+    bind_cols(xgb %>% predict(new_data = treino.prep))
+
+teste.pred <- teste.prep %>%
+    bind_cols(xgb %>% predict(new_data = teste.prep))
+
+valida.pred <- valida.prep %>%
+    bind_cols(xgb %>% predict(new_data = valida.prep))
+
+teste_rmse <- RMSE(teste.pred$crop_production, teste.pred$.pred)
+treino_rmse <- RMSE(treino.pred$crop_production, treino.pred$.pred)
+valida_rmse <- RMSE(valida.pred$crop_production, valida.pred$.pred)
+```
+
+Observamos o valor do RMSE para esse algoritmo:
+```{r}
+cat("RMSE para Treino: ", treino_rmse, "\n")
+cat("RMSE para Teste: ", teste_rmse, "\n")
+cat("RMSE para Valida: ", valida_rmse)
+```
+
+Vamos visualizar a predição para a produção de batatas em certos países (usaremos a batata por ser um dos grãos com maior produção nos países visualizados anteriormente):
+```{r pressure8, echo=FALSE}
+df3 <- df2 %>%bind_cols(xgb %>% predict(new_data = df.prep))
+
+df3 %>% filter(entity== c('China','Canada','Australia','Brazil', 'United States', 'Venezuela', 'Cuba', 'Japan', 'Uruguai', 'India', 'Russia', 'Indionesia', 'Chile'))%>% filter(crop== 'Potatoes')%>% 
+  ggplot(aes(x=year)) +
+  geom_line(aes(y = crop_production), color = "darkred", linetype="twodash") + 
+  geom_line(aes(y = .pred), color="steelblue") +
+  facet_wrap(~entity, ncol = 5) +
+  scale_x_continuous(guide = guide_axis(angle = 90)) +
+  labs(x = NULL, y = "Produção de batata (toneladas por hectar)")
+```
+
+## Random Forest
+```{r}
+tree_randforest <- rand_forest( min_n = 5,
+        trees = 500,
+        mtry = sqrt(ncolunas)
+        ) %>%
+        set_engine("randomForest") %>%
+        set_mode("regression")
+rf<-tree_randforest%>% fit(crop_production ~.,treino.prep)
+
+treino.pred <- treino.prep %>%
+    bind_cols(rf %>% predict(new_data = treino.prep))
+
+teste.pred <- teste.prep %>%
+    bind_cols(rf %>% predict(new_data = teste.prep))
+
+valida.pred <- valida.prep %>%
+    bind_cols(rf %>% predict(new_data = valida.prep))
+
+teste_rmse <- RMSE(teste.pred$crop_production, teste.pred$.pred)
+treino_rmse <- RMSE(treino.pred$crop_production, treino.pred$.pred)
+valida_rmse <- RMSE(valida.pred$crop_production, valida.pred$.pred)
+
+cat("RMSE para Treino: ", treino_rmse, "\n")
+cat("RMSE para Teste: ", teste_rmse, "\n")
+cat("RMSE para Valida: ", valida_rmse)
+```
+
+
+```{r pressure9, echo=FALSE}
+df3 <- df2 %>%bind_cols(rf %>% predict(new_data = df.prep))
+
+df3 %>% filter(entity== c('China','Canada','Australia','Brazil', 'United States', 'Venezuela', 'Cuba', 'Japan', 'Uruguai', 'India', 'Russia', 'Indionesia', 'Chile'))%>% filter(crop== 'Potatoes')%>% 
+  ggplot(aes(x=year)) +
+  geom_line(aes(y = crop_production), color = "darkred", linetype="twodash") + 
+  geom_line(aes(y = .pred), color="steelblue") +
+  facet_wrap(~entity, ncol = 5) +
+  scale_x_continuous(guide = guide_axis(angle = 90)) +
+  labs(x = NULL, y = "Produção de batata (toneladas por hectar)")
+```
